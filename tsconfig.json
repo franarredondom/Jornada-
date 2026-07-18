@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
+    "types": ["vite/client"],
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,

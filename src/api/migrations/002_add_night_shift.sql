@@ -1,0 +1,2 @@
+ALTER TABLE work_days
+  ADD COLUMN night_shift BOOLEAN NOT NULL DEFAULT false;

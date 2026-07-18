@@ -1,0 +1,1 @@
+ALTER TABLE work_days DROP CONSTRAINT IF EXISTS valid_shift;

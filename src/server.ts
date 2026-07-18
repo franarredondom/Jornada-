@@ -8,14 +8,14 @@ import { database } from './api/database.js';
 import { requireUser } from './api/auth.js';
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: config.CORS_ORIGIN });
+await app.register(cors, { origin: config.CORS_ORIGIN, methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'] });
 await app.register(jwt, { secret: config.JWT_SECRET });
 
 const credentials = z.object({ email: z.string().email().transform((value) => value.toLowerCase()), password: z.string().min(8) });
 const registerBody = credentials.extend({ fullName: z.string().trim().min(2).max(120) });
 const profileBody = z.object({ monthlySalary: z.coerce.number().min(0).max(999999999), weeklyHours: z.coerce.number().min(1).max(60), timezone: z.string().min(1).max(80).default('America/Santiago') });
-const overtimeBody = z.object({ startsAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), endsAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), kind: z.enum(['normal', 'holiday']), reason: z.string().trim().min(1).max(500) }).refine((value) => value.endsAt > value.startsAt, { message: 'La hora de término debe ser posterior al inicio.' });
-const workDayBody = z.object({ checkIn: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), checkOut: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), breakMinutes: z.coerce.number().int().min(0).max(720), overtime: z.array(overtimeBody).default([]) }).refine((value) => value.checkOut > value.checkIn, { message: 'La salida debe ser posterior al ingreso.' });
+const overtimeBody = z.object({ startsAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), endsAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), kind: z.enum(['normal', 'holiday']), reason: z.string().trim().max(500).optional().default('') }).refine((value) => value.endsAt > value.startsAt, { message: 'La hora de término debe ser posterior al inicio.' });
+const workDayBody = z.object({ checkIn: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), checkOut: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), breakMinutes: z.coerce.number().int().min(0).max(720), nightShift: z.boolean().default(false), overtime: z.array(overtimeBody).default([]) });
 const dateParam = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 
 app.get('/health', async () => {
@@ -62,10 +62,10 @@ app.put('/api/work-days/:date', { preHandler: requireUser }, async (request) => 
   const client = await database.connect();
   try {
     await client.query('BEGIN');
-    const day = await client.query<{ id: string }>('INSERT INTO work_days (user_id, work_date, check_in, check_out, break_minutes) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, work_date) DO UPDATE SET check_in = EXCLUDED.check_in, check_out = EXCLUDED.check_out, break_minutes = EXCLUDED.break_minutes, updated_at = now() RETURNING id', [request.user.userId, date, input.checkIn, input.checkOut, input.breakMinutes]);
+    const day = await client.query<{ id: string }>('INSERT INTO work_days (user_id, work_date, check_in, check_out, break_minutes, night_shift) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id, work_date) DO UPDATE SET check_in = EXCLUDED.check_in, check_out = EXCLUDED.check_out, break_minutes = EXCLUDED.break_minutes, night_shift = EXCLUDED.night_shift, updated_at = now() RETURNING id', [request.user.userId, date, input.checkIn, input.checkOut, input.breakMinutes, input.nightShift]);
     const workDayId = day.rows[0].id;
     await client.query('DELETE FROM overtime_entries WHERE work_day_id = $1', [workDayId]);
-    for (const entry of input.overtime) await client.query('INSERT INTO overtime_entries (work_day_id, starts_at, ends_at, kind, reason) VALUES ($1, $2, $3, $4, $5)', [workDayId, entry.startsAt, entry.endsAt, entry.kind, entry.reason]);
+    for (const entry of input.overtime) await client.query('INSERT INTO overtime_entries (work_day_id, starts_at, ends_at, kind, reason) VALUES ($1, $2, $3, $4, $5)', [workDayId, entry.startsAt, entry.endsAt, entry.kind, entry.reason || 'Sin motivo especificado']);
     await client.query('COMMIT');
     return { id: workDayId, date, ...input };
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
@@ -73,12 +73,22 @@ app.put('/api/work-days/:date', { preHandler: requireUser }, async (request) => 
 
 app.get('/api/work-days', { preHandler: requireUser }, async (request) => {
   const query = z.object({ from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).parse(request.query);
-  const result = await database.query('SELECT w.id, w.work_date AS date, w.check_in AS "checkIn", w.check_out AS "checkOut", w.break_minutes AS "breakMinutes", COALESCE(json_agg(json_build_object(\'id\', o.id, \'startsAt\', o.starts_at, \'endsAt\', o.ends_at, \'kind\', o.kind, \'reason\', o.reason) ORDER BY o.starts_at) FILTER (WHERE o.id IS NOT NULL), \'[]\') AS overtime FROM work_days w LEFT JOIN overtime_entries o ON o.work_day_id = w.id WHERE w.user_id = $1 AND w.work_date BETWEEN $2 AND $3 GROUP BY w.id ORDER BY w.work_date DESC', [request.user.userId, query.from, query.to]);
+  const result = await database.query('SELECT w.id, to_char(w.work_date, \'YYYY-MM-DD\') AS date, w.check_in AS "checkIn", w.check_out AS "checkOut", w.break_minutes AS "breakMinutes", w.night_shift AS "nightShift", COALESCE(json_agg(json_build_object(\'id\', o.id, \'startsAt\', o.starts_at, \'endsAt\', o.ends_at, \'kind\', o.kind, \'reason\', o.reason) ORDER BY o.starts_at) FILTER (WHERE o.id IS NOT NULL), \'[]\') AS overtime FROM work_days w LEFT JOIN overtime_entries o ON o.work_day_id = w.id WHERE w.user_id = $1 AND w.work_date BETWEEN $2 AND $3 GROUP BY w.id ORDER BY w.work_date DESC', [request.user.userId, query.from, query.to]);
   return result.rows;
 });
 
-app.setErrorHandler((error, _request, reply) => {
-  if (error instanceof z.ZodError) return reply.code(400).send({ message: 'Datos inválidos.', details: error.flatten() });
+app.delete('/api/work-days/:date', { preHandler: requireUser }, async (request, reply) => {
+  const { date } = dateParam.parse(request.params);
+  const result = await database.query('DELETE FROM work_days WHERE user_id = $1 AND work_date = $2 RETURNING id', [request.user.userId, date]);
+  if (!result.rowCount) return reply.code(404).send({ message: 'No existe una jornada para esa fecha.' });
+  return { deleted: true };
+});
+
+app.setErrorHandler((error, request, reply) => {
+  if (error instanceof z.ZodError) {
+    const message = error.issues.map((issue) => `${issue.path.join('.') || 'jornada'}: ${issue.message}`).join(' · ');
+    return reply.code(400).send({ message: `Datos inválidos — ${message}`, details: error.flatten(), received: request.body });
+  }
   app.log.error(error);
   return reply.code(500).send({ message: 'Ocurrió un error inesperado.' });
 });
