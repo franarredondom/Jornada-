@@ -7,11 +7,11 @@ type DayRecord = { id: string; date: string; checkIn: string; checkOut: string; 
 type DayDraft = Pick<DayRecord, 'checkIn' | 'checkOut' | 'breakMinutes' | 'nightShift' | 'extras'>;
 type Credentials = { email: string; password: string; fullName?: string };
 
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:3000';
+const apiUrl = import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? 'https://jornada-fs8e.onrender.com' : 'http://localhost:3000');
 const today = () => new Date().toISOString().slice(0, 10);
 const time = (value: string) => value.slice(0, 5);
-const isTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
-const asHours = (start: string, end: string) => {
+export const isTime = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+export const asHours = (start: string, end: string) => {
   const [startHour, startMinute] = start.split(':').map(Number);
   const [endHour, endMinute] = end.split(':').map(Number);
   const startTotal = startHour * 60 + startMinute;
@@ -20,9 +20,9 @@ const asHours = (start: string, end: string) => {
   return (endTotal - startTotal) / 60;
 };
 const money = (amount: number) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(amount);
-const isDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T12:00:00`).getTime());
+export const isDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T12:00:00`).getTime());
 const displayDate = (date: string) => new Intl.DateTimeFormat('es-CL', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${isDate(date) ? date : today()}T12:00:00`));
-const weekKey = (date: string) => { const value = new Date(`${isDate(date) ? date : today()}T12:00:00`); value.setDate(value.getDate() - ((value.getDay() || 7) - 1)); return value.toISOString().slice(0, 10); };
+export const weekKey = (date: string) => { const value = new Date(`${isDate(date) ? date : today()}T12:00:00`); value.setDate(value.getDate() - ((value.getDay() || 7) - 1)); return value.toISOString().slice(0, 10); };
 
 async function request<T>(path: string, options: RequestInit = {}, token?: string): Promise<T> {
   const response = await fetch(`${apiUrl}${path}`, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers } });
@@ -92,7 +92,7 @@ export default function App() {
     try {
       const [profile, days] = await Promise.all([
         request<{ monthlySalary: number; weeklyHours: number }>('/api/profile', {}, activeToken),
-        request<Parameters<typeof mapRecord>[0][]>(`/api/work-days?from=2026-01-01&to=2026-12-31`, {}, activeToken),
+        request<Parameters<typeof mapRecord>[0][]>('/api/work-days?from=2000-01-01&to=2100-12-31', {}, activeToken),
       ]);
       const savedSalary = Number(profile.monthlySalary);
       setMonthlySalary(savedSalary); setSalaryInput(savedSalary ? String(savedSalary) : ''); setWeeklyHours(Number(profile.weeklyHours)); setRecords(days.map(mapRecord));

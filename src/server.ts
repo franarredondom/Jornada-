@@ -26,14 +26,20 @@ app.get('/health', async () => {
 app.post('/api/auth/register', async (request, reply) => {
   const input = registerBody.parse(request.body);
   const passwordHash = await bcrypt.hash(input.password, 12);
+  const client = await database.connect();
   try {
-    const result = await database.query<{ id: string; email: string; full_name: string }>('INSERT INTO users (email, password_hash, full_name) VALUES ($1, $2, $3) RETURNING id, email, full_name', [input.email, passwordHash, input.fullName]);
+    await client.query('BEGIN');
+    const result = await client.query<{ id: string; email: string; full_name: string }>('INSERT INTO users (email, password_hash, full_name) VALUES ($1, $2, $3) RETURNING id, email, full_name', [input.email, passwordHash, input.fullName]);
     const user = result.rows[0];
-    await database.query('INSERT INTO profiles (user_id) VALUES ($1)', [user.id]);
+    await client.query('INSERT INTO profiles (user_id) VALUES ($1)', [user.id]);
+    await client.query('COMMIT');
     return reply.code(201).send({ user: { id: user.id, email: user.email, fullName: user.full_name }, token: app.jwt.sign({ userId: user.id, email: user.email }) });
   } catch (error: unknown) {
+    await client.query('ROLLBACK');
     if ((error as { code?: string }).code === '23505') return reply.code(409).send({ message: 'Ya existe una cuenta con ese correo.' });
     throw error;
+  } finally {
+    client.release();
   }
 });
 
@@ -87,7 +93,7 @@ app.delete('/api/work-days/:date', { preHandler: requireUser }, async (request, 
 app.setErrorHandler((error, request, reply) => {
   if (error instanceof z.ZodError) {
     const message = error.issues.map((issue) => `${issue.path.join('.') || 'jornada'}: ${issue.message}`).join(' · ');
-    return reply.code(400).send({ message: `Datos inválidos — ${message}`, details: error.flatten(), received: request.body });
+    return reply.code(400).send({ message: `Datos inválidos — ${message}`, details: error.flatten() });
   }
   app.log.error(error);
   return reply.code(500).send({ message: 'Ocurrió un error inesperado.' });
